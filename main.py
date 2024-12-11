@@ -3,4 +3,5 @@
 from preprocess import Preprocessor
 
 processor = Preprocessor("data/test.csv", "data/train.csv")
-processor.visualization()
+#processor.visualization()
+processor.process()
