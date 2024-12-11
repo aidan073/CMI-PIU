@@ -50,7 +50,7 @@ class Preprocessor:
         plt.ylabel('Features')
         plt.savefig("visualizations/correlation_matrix.png", bbox_inches="tight")
 
-    # modify features
+    # feature engineering
     def _feature_engineering(self, df):
         df['BMI_Age'] = df['Physical-BMI'] * df['Basic_Demos-Age']
         df['Internet_Hours_Age'] = df['PreInt_EduHx-computerinternet_hoursday'] * df['Basic_Demos-Age']
@@ -70,39 +70,52 @@ class Preprocessor:
 
         return df
 
-    # all data processing
-    def process(self):
+    # all data processing (writes new data to new_data folder)
+    def process(self)->None:
 
         # *train processing*
-        # usable_train = self.train[self.train['sii'].notnull()] # remove any samples with no sii
-        threshold = 0.7
-        usable_train = self.train.dropna(thresh=int((1-threshold) * self.train.shape[1]))
-
-        # track and remove id from train (will be added back after proccessing)
-        id_column_train = usable_train['id'] 
-        usable_train.drop('id', axis=1, inplace=True)
 
         # drop PCIAT (not used for training) and Season (useless)
-        usable_train.drop([col for col in usable_train.columns if col.startswith("PCIAT")], axis=1, inplace=True) # remove PCIAT columns (not in test set)
-        usable_train.drop([col for col in usable_train.columns if 'Season' in col], axis=1, inplace=True) # remove seasonal columns
+        self.train.drop([col for col in self.train.columns if col.startswith("PCIAT")], axis=1, inplace=True)
+        self.train.drop([col for col in self.train.columns if 'Season' in col], axis=1, inplace=True)
 
         # engineer
-        usable_train = self._feature_engineering(usable_train) # engineer features
-        usable_train.replace([np.inf, -np.inf], np.nan, inplace=True)
+        self.train = self._feature_engineering(self.train)
+        self.train.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        threshold = 0.4 # must have 40% of columns
+        self.train.dropna(thresh=int(threshold * self.train.shape[1]), inplace=True)
+
+        # track and remove id from train (will be added back after proccessing)
+        id_column_train = self.train.pop('id')
 
         # imputer
         imputer_train = KNNImputer(n_neighbors=5)
-        imputed_samples = imputer_train.fit_transform(usable_train)
+        imputed_samples = imputer_train.fit_transform(self.train)
         
         # reconstruct train df and finalize
-        imputed_train = pd.DataFrame(imputed_samples, columns=usable_train.columns, index=usable_train.index)
-        sii_column_train = imputed_train['sii']
-        imputed_train.drop('sii', axis=1, inplace=True)
-        imputed_train['id'] = id_column_train
-        imputed_train['sii'] = sii_column_train
-        imputed_train.to_csv('new_data/new_train.csv')
+        imputed_train = pd.DataFrame(imputed_samples, columns=self.train.columns, index=self.train.index)
+        imputed_train.insert(0, 'id', id_column_train)
+        imputed_train.insert(1, 'sii', imputed_train.pop('sii'))
+        imputed_train.to_csv('new_data/new_train.csv', index=False)
 
         # *test processing*
-        
 
-        return
+        # drop season columns
+        self.test.drop([col for col in self.test.columns if 'Season' in col], axis=1, inplace=True)
+
+        # engineer
+        self.test = self._feature_engineering(self.test)
+        self.test.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        # track and remove id from test (will be added back after proccessing)
+        id_column_test = self.test.pop('id')
+
+        # imputer
+        imputer_test = KNNImputer(n_neighbors=2)
+        imputed_samples = imputer_test.fit_transform(self.test)
+
+        # reconstruct test df and finalize
+        imputed_test = pd.DataFrame(imputed_samples, columns=self.test.columns, index=self.test.index)
+        imputed_test.insert(0, 'id', id_column_test)
+        imputed_test.to_csv('new_data/new_test.csv', index=False)
