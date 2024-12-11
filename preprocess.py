@@ -9,6 +9,7 @@ class Preprocessor:
         self.test = pd.read_csv(test_path)
         self.train = pd.read_csv(train_path)
 
+    # pure visualization intended for training set, does not modify training set
     def visualization(self):
         usable = self.train[self.train['sii'].notnull()] # remove any samples with no sii
 
@@ -49,10 +50,59 @@ class Preprocessor:
         plt.ylabel('Features')
         plt.savefig("visualizations/correlation_matrix.png", bbox_inches="tight")
 
-    def feature_engineering(self):
-        pass
-    def fill_nulls(self):
-        imputer = KNNImputer(n_neighbors=5)
-        transformed_samples = imputer.fit_transform(self.train)
+    # modify features
+    def _feature_engineering(self, df):
+        df['BMI_Age'] = df['Physical-BMI'] * df['Basic_Demos-Age']
+        df['Internet_Hours_Age'] = df['PreInt_EduHx-computerinternet_hoursday'] * df['Basic_Demos-Age']
+        df['BMI_Internet_Hours'] = df['Physical-BMI'] * df['PreInt_EduHx-computerinternet_hoursday']
+        df['BFP_BMI'] = df['BIA-BIA_Fat'] / df['BIA-BIA_BMI']
+        df['FFMI_BFP'] = df['BIA-BIA_FFMI'] / df['BIA-BIA_Fat']
+        df['FMI_BFP'] = df['BIA-BIA_FMI'] / df['BIA-BIA_Fat']
+        df['LST_TBW'] = df['BIA-BIA_LST'] / df['BIA-BIA_TBW']
+        df['BFP_BMR'] = df['BIA-BIA_Fat'] * df['BIA-BIA_BMR']
+        df['BFP_DEE'] = df['BIA-BIA_Fat'] * df['BIA-BIA_DEE']
+        df['BMR_Weight'] = df['BIA-BIA_BMR'] / df['Physical-Weight']
+        df['DEE_Weight'] = df['BIA-BIA_DEE'] / df['Physical-Weight']
+        df['SMM_Height'] = df['BIA-BIA_SMM'] / df['Physical-Height']
+        df['Muscle_to_Fat'] = df['BIA-BIA_SMM'] / df['BIA-BIA_FMI']
+        df['Hydration_Status'] = df['BIA-BIA_TBW'] / df['Physical-Weight']
+        df['ICW_TBW'] = df['BIA-BIA_ICW'] / df['BIA-BIA_TBW']
+
+        return df
+
+    # all data processing
+    def process(self):
+
+        # *train processing*
+        # usable_train = self.train[self.train['sii'].notnull()] # remove any samples with no sii
+        threshold = 0.7
+        usable_train = self.train.dropna(thresh=int((1-threshold) * self.train.shape[1]))
+
+        # track and remove id from train (will be added back after proccessing)
+        id_column_train = usable_train['id'] 
+        usable_train.drop('id', axis=1, inplace=True)
+
+        # drop PCIAT (not used for training) and Season (useless)
+        usable_train.drop([col for col in usable_train.columns if col.startswith("PCIAT")], axis=1, inplace=True) # remove PCIAT columns (not in test set)
+        usable_train.drop([col for col in usable_train.columns if 'Season' in col], axis=1, inplace=True) # remove seasonal columns
+
+        # engineer
+        usable_train = self._feature_engineering(usable_train) # engineer features
+        usable_train.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        # imputer
+        imputer_train = KNNImputer(n_neighbors=5)
+        imputed_samples = imputer_train.fit_transform(usable_train)
         
+        # reconstruct train df and finalize
+        imputed_train = pd.DataFrame(imputed_samples, columns=usable_train.columns, index=usable_train.index)
+        sii_column_train = imputed_train['sii']
+        imputed_train.drop('sii', axis=1, inplace=True)
+        imputed_train['id'] = id_column_train
+        imputed_train['sii'] = sii_column_train
+        imputed_train.to_csv('new_data/new_train.csv')
+
+        # *test processing*
+        
+
         return
