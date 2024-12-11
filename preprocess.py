@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from sklearn.impute import KNNImputer
 from matplotlib.ticker import PercentFormatter
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 
 class Preprocessor:
     def __init__(self, test_path, train_path):
@@ -86,6 +86,7 @@ class Preprocessor:
                 nn.Linear(encoding_dim, mid_dim),
                 nn.ReLU(),
                 nn.Linear(mid_dim, input_dim),
+                nn.Tanh()
             )
         
         def forward(self, x):
@@ -94,8 +95,8 @@ class Preprocessor:
             return decoded
 
     # all data processing (writes new data to new_data folder)
-    def process(self, remove_set_dupes=True)->None:
-        scaler = StandardScaler()
+    def process(self, with_autoencoder=False, remove_set_dupes=True)->None:
+        scaler = MinMaxScaler(feature_range=(-1,1))
 
         """
         Train Set Processing
@@ -130,7 +131,7 @@ class Preprocessor:
         imputed_samples_train = np.delete(imputed_samples_train, sii_loc, axis=1) 
 
         # scale
-        imputed_samples_train = torch.from_numpy(scaler.fit_transform(imputed_samples_train)).float()
+        final_samples_train = torch.from_numpy(scaler.fit_transform(imputed_samples_train)).float()
 
         """
         Test Set Processing
@@ -149,65 +150,75 @@ class Preprocessor:
         self.test.insert(sii_loc, column='sii', value=None)
         imputed_samples_test = imputer.transform(self.test)
         imputed_samples_test = np.delete(imputed_samples_test, sii_loc, axis=1) 
-        imputed_samples_test = torch.from_numpy(scaler.transform(imputed_samples_test)).float()
+        final_samples_test = torch.from_numpy(scaler.transform(imputed_samples_test)).float()
 
         """
         Autoencoder training for dimensionality reduction
         """
-        model = self.autoencoder(int(imputed_samples_test.shape[1]), int(imputed_samples_test.shape[1]/2), int(imputed_samples_test.shape[1]/4))
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.005)
-        epochs = 100
-        batch_size = 100
+        if with_autoencoder:
+            model = self.autoencoder(int(final_samples_test.shape[1]), int(final_samples_test.shape[1]/2), 10)
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(model.parameters(), lr=0.005)
+            epochs = 100
+            batch_size = 100
 
-        # store the loss values for plotting
-        train_losses = []
-        val_losses = []
+            # store the loss values for plotting
+            train_losses = []
+            val_losses = []
 
-        for epoch in range(epochs):
-            model.train()
-            temp_train_losses = []
-            for i in range(0, len(imputed_samples_train), batch_size):
-                batch = imputed_samples_train[i:i+batch_size]
-                optimizer.zero_grad()
-                reconstructed = model(batch)
-                train_loss = criterion(reconstructed, batch)
-                train_loss.backward()
-                optimizer.step()
-                temp_train_losses.append(train_loss.item())
+            for epoch in range(epochs):
+                model.train()
+                temp_train_losses = []
+                for i in range(0, len(final_samples_train), batch_size):
+                    batch = final_samples_train[i:i+batch_size]
+                    optimizer.zero_grad()
+                    reconstructed = model(batch)
+                    train_loss = criterion(reconstructed, batch)
+                    train_loss.backward()
+                    optimizer.step()
+                    temp_train_losses.append(train_loss.item())
 
-            model.eval()
+                model.eval()
+                with torch.no_grad():
+                    final_samples_test_reconstructed = model(final_samples_test)
+                    val_loss = criterion(final_samples_test_reconstructed, final_samples_test).item()
+
+                train_losses.append(sum(temp_train_losses)/len(temp_train_losses))
+                val_losses.append(val_loss)
+
+                print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {sum(temp_train_losses)/len(temp_train_losses):.4f}, Val Loss: {val_loss:.4f}")
+
+            plt.figure(figsize=(10, 6))
+            plt.plot(range(epochs), train_losses, label='Train Loss', color='blue')
+            plt.plot(range(epochs), val_losses, label='Validation Loss', color='red')
+            plt.title('Training and Validation Loss Over Epochs')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig("visualizations/autoencoder_training.png", bbox_inches="tight")
+            
+            # encode
             with torch.no_grad():
-                imputed_samples_test_reconstructed = model(imputed_samples_test)
-                val_loss = criterion(imputed_samples_test_reconstructed, imputed_samples_test).item()
+                final_samples_test = model.encoder(final_samples_test).numpy()
+                final_samples_train = model.encoder(final_samples_train).numpy()
+            
+            test_path = 'new_data/new_test_encoded.csv'
+            train_path = 'new_data/new_train_encoded.csv'
 
-            train_losses.append(sum(temp_train_losses)/len(temp_train_losses))
-            val_losses.append(val_loss)
-
-            print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {sum(temp_train_losses)/len(temp_train_losses):.4f}, Val Loss: {val_loss:.4f}")
-
-        plt.figure(figsize=(10, 6))
-        plt.plot(range(epochs), train_losses, label='Train Loss', color='blue')
-        plt.plot(range(epochs), val_losses, label='Validation Loss', color='red')
-        plt.title('Training and Validation Loss Over Epochs')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig("visualizations/autoencoder_training.png", bbox_inches="tight")
-        
-        # encode
-        with torch.no_grad():
-            encoded_test = model.encoder(imputed_samples_test).numpy()
-            encoded_train = model.encoder(imputed_samples_train).numpy()
+        if not with_autoencoder:
+            final_samples_test = final_samples_test.numpy()
+            final_samples_train = final_samples_train.numpy()
+            test_path = 'new_data/new_test.csv'
+            train_path = 'new_data/new_train.csv'
 
         # reconstruct test df and finalize
-        imputed_test = pd.DataFrame(encoded_test)
-        imputed_test.insert(0, 'id', id_column_test)
-        imputed_test.to_csv('new_data/new_test.csv', index=False)
+        final_test = pd.DataFrame(final_samples_test)
+        final_test.insert(0, 'id', id_column_test)
+        final_test.to_csv(test_path, index=False)
 
         # reconstruct train df and finalize
-        imputed_train = pd.DataFrame(encoded_train)
-        imputed_train.insert(0, 'id', id_column_train.reset_index(drop=True))
-        imputed_train.insert(1, 'sii', sii_column_train)
-        imputed_train.to_csv('new_data/new_train.csv', index=False)
+        final_train = pd.DataFrame(final_samples_train)
+        final_train.insert(0, 'id', id_column_train.reset_index(drop=True))
+        final_train.insert(1, 'sii', sii_column_train)
+        final_train.to_csv(train_path, index=False)
