@@ -1,8 +1,12 @@
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import pandas as pd
 import numpy as np
 from sklearn.impute import KNNImputer
 from matplotlib.ticker import PercentFormatter
+from sklearn.preprocessing import MinMaxScaler
 
 class Preprocessor:
     def __init__(self, test_path, train_path):
@@ -69,11 +73,37 @@ class Preprocessor:
         df['ICW_TBW'] = df['BIA-BIA_ICW'] / df['BIA-BIA_TBW']
 
         return df
+    
+    class autoencoder(nn.Module):
+        def __init__(self, input_dim, mid_dim, encoding_dim):
+            super().__init__()
+            self.encoder = nn.Sequential(
+                nn.Linear(input_dim, mid_dim),
+                nn.ReLU(),
+                nn.Linear(mid_dim, encoding_dim)
+            )
+            self.decoder = nn.Sequential(
+                nn.Linear(encoding_dim, mid_dim),
+                nn.ReLU(),
+                nn.Linear(mid_dim, input_dim),
+                nn.Tanh()
+            )
+        
+        def forward(self, x):
+            encoded = self.encoder(x)
+            decoded = self.decoder(encoded)
+            return decoded
 
     # all data processing (writes new data to new_data folder)
-    def process(self)->None:
+    def process(self, with_autoencoder=False, remove_set_dupes=True)->None:
+        scaler = MinMaxScaler(feature_range=(-1,1))
 
-        # *train processing*
+        """
+        Train Set Processing
+        """
+        # remove train samples that are in test set
+        if remove_set_dupes:
+            self.train = self.train[~self.train['id'].isin(self.test['id'])]
 
         # drop PCIAT (not used for training) and Season (useless)
         self.train.drop([col for col in self.train.columns if col.startswith("PCIAT")], axis=1, inplace=True)
@@ -89,18 +119,23 @@ class Preprocessor:
         # track and remove id from train (will be added back after proccessing)
         id_column_train = self.train.pop('id')
 
-        # imputer
-        imputer_train = KNNImputer(n_neighbors=5)
-        imputed_samples = imputer_train.fit_transform(self.train)
-        
-        # reconstruct train df and finalize
-        imputed_train = pd.DataFrame(imputed_samples, columns=self.train.columns, index=self.train.index)
-        imputed_train.insert(0, 'id', id_column_train)
-        imputed_train.insert(1, 'sii', imputed_train.pop('sii'))
-        imputed_train.to_csv('new_data/new_train.csv', index=False)
+        sii_loc = self.train.columns.get_loc("sii") # get location of sii, so it can be removed after imputing (to avoid scaling)
 
-        # *test processing*
+        # impute
+        imputer = KNNImputer(n_neighbors=5)
+        imputed_samples_train = imputer.fit_transform(self.train)
 
+        # track and remove sii
+        sii_column_train = imputed_samples_train[:, sii_loc]
+        sii_column_train = np.round(sii_column_train, 0) # prevent targets becoming decimals
+        imputed_samples_train = np.delete(imputed_samples_train, sii_loc, axis=1) 
+
+        # scale
+        final_samples_train = torch.from_numpy(scaler.fit_transform(imputed_samples_train)).float()
+
+        """
+        Test Set Processing
+        """
         # drop season columns
         self.test.drop([col for col in self.test.columns if 'Season' in col], axis=1, inplace=True)
 
@@ -111,11 +146,79 @@ class Preprocessor:
         # track and remove id from test (will be added back after proccessing)
         id_column_test = self.test.pop('id')
 
-        # imputer
-        imputer_test = KNNImputer(n_neighbors=2)
-        imputed_samples = imputer_test.fit_transform(self.test)
+        # impute and scale
+        self.test.insert(sii_loc, column='sii', value=None)
+        imputed_samples_test = imputer.transform(self.test)
+        imputed_samples_test = np.delete(imputed_samples_test, sii_loc, axis=1) 
+        final_samples_test = torch.from_numpy(scaler.transform(imputed_samples_test)).float()
+
+        """
+        Autoencoder training for dimensionality reduction
+        """
+        if with_autoencoder:
+            model = self.autoencoder(int(final_samples_test.shape[1]), int(final_samples_test.shape[1]/2), 10)
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(model.parameters(), lr=0.005)
+            epochs = 100
+            batch_size = 100
+
+            # store the loss values for plotting
+            train_losses = []
+            val_losses = []
+
+            for epoch in range(epochs):
+                model.train()
+                temp_train_losses = []
+                for i in range(0, len(final_samples_train), batch_size):
+                    batch = final_samples_train[i:i+batch_size]
+                    optimizer.zero_grad()
+                    reconstructed = model(batch)
+                    train_loss = criterion(reconstructed, batch)
+                    train_loss.backward()
+                    optimizer.step()
+                    temp_train_losses.append(train_loss.item())
+
+                model.eval()
+                with torch.no_grad():
+                    final_samples_test_reconstructed = model(final_samples_test)
+                    val_loss = criterion(final_samples_test_reconstructed, final_samples_test).item()
+
+                train_losses.append(sum(temp_train_losses)/len(temp_train_losses))
+                val_losses.append(val_loss)
+
+                print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {sum(temp_train_losses)/len(temp_train_losses):.4f}, Val Loss: {val_loss:.4f}")
+
+            plt.figure(figsize=(10, 6))
+            plt.plot(range(epochs), train_losses, label='Train Loss', color='blue')
+            plt.plot(range(epochs), val_losses, label='Validation Loss', color='red')
+            plt.title('Training and Validation Loss Over Epochs')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig("visualizations/autoencoder_training.png", bbox_inches="tight")
+            
+            # encode
+            with torch.no_grad():
+                final_samples_test = model.encoder(final_samples_test).numpy()
+                final_samples_train = model.encoder(final_samples_train).numpy()
+            
+            test_path = 'new_data/new_test_encoded.csv'
+            train_path = 'new_data/new_train_encoded.csv'
+
+        if not with_autoencoder:
+            final_samples_test = final_samples_test.numpy()
+            final_samples_train = final_samples_train.numpy()
+            test_path = 'new_data/new_test.csv'
+            train_path = 'new_data/new_train.csv'
 
         # reconstruct test df and finalize
-        imputed_test = pd.DataFrame(imputed_samples, columns=self.test.columns, index=self.test.index)
-        imputed_test.insert(0, 'id', id_column_test)
-        imputed_test.to_csv('new_data/new_test.csv', index=False)
+        final_test = pd.DataFrame(final_samples_test)
+        final_test.insert(0, 'id', id_column_test)
+        final_test.to_csv(test_path, index=False)
+
+        # reconstruct train df and finalize
+        final_train = pd.DataFrame(final_samples_train)
+        final_train.insert(0, 'id', id_column_train.reset_index(drop=True))
+        final_train.insert(1, 'sii', sii_column_train)
+        final_train.to_csv(train_path, index=False)
