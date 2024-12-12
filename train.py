@@ -1,3 +1,4 @@
+from preprocess import Preprocessor
 import pandas as pd
 from sklearn import metrics
 from sklearn.model_selection import train_test_split
@@ -20,7 +21,7 @@ def train(X_train, y_train, X_val, y_val):
   cm = metrics.confusion_matrix(y_val, pred, labels=regr.classes_)
   disp = metrics.ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=regr.classes_)
   disp.plot()
-  plt.savefig("con_matrix.png")
+  plt.savefig("con_matrix_SMOTE.png")
 
   print("MSE:",metrics.root_mean_squared_error(y_val, pred))
 
@@ -29,12 +30,12 @@ def train(X_train, y_train, X_val, y_val):
 
 def main():
   # processor = Preprocessor("data/test.csv", "data/train.csv")
-  # rocessor.visualization()
-  # processor.process()
+  # # rocessor.visualization()
+  # processor.process(with_autoencoder=True)
 
-  train_df = pd.read_csv('new_data/new_train_encoded.csv')
+  train_df = pd.read_csv('new_data/new_train.csv')
   train_df = train_df.drop(columns=['id'])
-  test_df = pd.read_csv('new_data/new_test_encoded.csv')
+  test_df = pd.read_csv('new_data/new_test.csv')
   X = train_df.drop(columns=['sii'])
   y = train_df.pop('sii')
 
