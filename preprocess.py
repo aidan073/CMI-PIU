@@ -7,6 +7,7 @@ import numpy as np
 from sklearn.impute import KNNImputer
 from matplotlib.ticker import PercentFormatter
 from sklearn.preprocessing import MinMaxScaler
+from imblearn.over_sampling import SMOTE
 
 class Preprocessor:
     def __init__(self, test_path, train_path):
@@ -96,7 +97,7 @@ class Preprocessor:
 
     # all data processing (writes new data to new_data folder)
     def process(self, with_autoencoder=False, remove_set_dupes=True)->None:
-        scaler = MinMaxScaler(feature_range=(-1,1))
+        scaler = MinMaxScaler(feature_range=(-1, 1))
 
         """
         Train Set Processing
@@ -113,25 +114,38 @@ class Preprocessor:
         self.train = self._feature_engineering(self.train)
         self.train.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-        threshold = 0.4 # must have 40% of columns
+        threshold = 0.4  # must have 40% of columns
         self.train.dropna(thresh=int(threshold * self.train.shape[1]), inplace=True)
 
-        # track and remove id from train (will be added back after proccessing)
+        # track and remove id from train (will be added back after processing)
         id_column_train = self.train.pop('id')
 
-        sii_loc = self.train.columns.get_loc("sii") # get location of sii, so it can be removed after imputing (to avoid scaling)
+        # track and remove sii column (target variable)
+        sii_loc = self.train.columns.get_loc("sii")
+        target_column_train = self.train.pop('sii')
+
+        # Check and handle missing values in target
+        if target_column_train.isna().any():
+            print("Warning: NaN values detected in target variable. Dropping rows with NaN targets.")
+            valid_indices = ~target_column_train.isna()  # Identify rows without NaN in the target
+            self.train = self.train[valid_indices]
+            target_column_train = target_column_train[valid_indices]
 
         # impute
         imputer = KNNImputer(n_neighbors=5)
         imputed_samples_train = imputer.fit_transform(self.train)
 
-        # track and remove sii
-        sii_column_train = imputed_samples_train[:, sii_loc]
-        sii_column_train = np.round(sii_column_train, 0) # prevent targets becoming decimals
-        imputed_samples_train = np.delete(imputed_samples_train, sii_loc, axis=1) 
-
         # scale
-        final_samples_train = torch.from_numpy(scaler.fit_transform(imputed_samples_train)).float()
+        scaled_samples_train = scaler.fit_transform(imputed_samples_train)
+        target_column_train = target_column_train.astype(int).to_numpy()
+
+        # apply SMOTE
+        smote = SMOTE(random_state=42)
+        scaled_samples_train, target_column_train = smote.fit_resample(scaled_samples_train, target_column_train)
+
+        # convert to torch tensors
+        final_samples_train = torch.from_numpy(scaled_samples_train).float()
+        target_column_train = torch.from_numpy(target_column_train).long()
 
         """
         Test Set Processing
@@ -143,14 +157,15 @@ class Preprocessor:
         self.test = self._feature_engineering(self.test)
         self.test.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-        # track and remove id from test (will be added back after proccessing)
+        # track and remove id from test (will be added back after processing)
         id_column_test = self.test.pop('id')
 
         # impute and scale
         self.test.insert(sii_loc, column='sii', value=None)
-        imputed_samples_test = imputer.transform(self.test)
-        imputed_samples_test = np.delete(imputed_samples_test, sii_loc, axis=1) 
+        test_data = self.test.drop(columns=['sii'])
+        imputed_samples_test = imputer.transform(test_data)
         final_samples_test = torch.from_numpy(scaler.transform(imputed_samples_test)).float()
+
 
         """
         Autoencoder training for dimensionality reduction
@@ -183,10 +198,10 @@ class Preprocessor:
                     final_samples_test_reconstructed = model(final_samples_test)
                     val_loss = criterion(final_samples_test_reconstructed, final_samples_test).item()
 
-                train_losses.append(sum(temp_train_losses)/len(temp_train_losses))
+                train_losses.append(sum(temp_train_losses) / len(temp_train_losses))
                 val_losses.append(val_loss)
 
-                print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {sum(temp_train_losses)/len(temp_train_losses):.4f}, Val Loss: {val_loss:.4f}")
+                print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {sum(temp_train_losses) / len(temp_train_losses):.4f}, Val Loss: {val_loss:.4f}")
 
             plt.figure(figsize=(10, 6))
             plt.plot(range(epochs), train_losses, label='Train Loss', color='blue')
@@ -197,12 +212,12 @@ class Preprocessor:
             plt.legend()
             plt.grid(True)
             plt.savefig("visualizations/autoencoder_training.png", bbox_inches="tight")
-            
+
             # encode
             with torch.no_grad():
                 final_samples_test = model.encoder(final_samples_test).numpy()
                 final_samples_train = model.encoder(final_samples_train).numpy()
-            
+
             test_path = 'new_data/new_test_encoded.csv'
             train_path = 'new_data/new_train_encoded.csv'
 
@@ -220,5 +235,5 @@ class Preprocessor:
         # reconstruct train df and finalize
         final_train = pd.DataFrame(final_samples_train)
         final_train.insert(0, 'id', id_column_train.reset_index(drop=True))
-        final_train.insert(1, 'sii', sii_column_train)
+        final_train.insert(1, 'sii', target_column_train.numpy())
         final_train.to_csv(train_path, index=False)
