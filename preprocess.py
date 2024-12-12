@@ -8,6 +8,35 @@ from sklearn.impute import KNNImputer
 from matplotlib.ticker import PercentFormatter
 from sklearn.preprocessing import MinMaxScaler
 from imblearn.over_sampling import SMOTE
+from collections import Counter
+import matplotlib.pyplot as plt
+
+def visualize_class_distribution(target_before, target_after, save_path="visualizations/smote_comparison.png"):
+    """
+    Visualize class distributions before and after SMOTE.
+    Args:
+        target_before: Target labels before applying SMOTE.
+        target_after: Target labels after applying SMOTE.
+        save_path: Path to save the visualization.
+    """
+    def plot_class_distribution(target, title, ax):
+        class_counts = Counter(target)
+        classes = list(class_counts.keys())
+        counts = list(class_counts.values())
+        ax.bar(classes, counts, color='coral', alpha=0.7, edgecolor='black')
+        ax.set_xticks(classes)
+        ax.set_xlabel('Class Labels')
+        ax.set_ylabel('Count')
+        ax.set_title(title)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    plot_class_distribution(target_before, "Before SMOTE", axes[0])
+    plot_class_distribution(target_after, "After SMOTE", axes[1])
+
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.show()
+
 
 class Preprocessor:
     def __init__(self, test_path, train_path):
@@ -139,9 +168,13 @@ class Preprocessor:
         scaled_samples_train = scaler.fit_transform(imputed_samples_train)
         target_column_train = target_column_train.astype(int).to_numpy()
 
+        target_column_train_before_smote = target_column_train.copy()
+
         # apply SMOTE
         smote = SMOTE(random_state=42)
         scaled_samples_train, target_column_train = smote.fit_resample(scaled_samples_train, target_column_train)
+
+        visualize_class_distribution(target_column_train_before_smote, target_column_train)
 
         # convert to torch tensors
         final_samples_train = torch.from_numpy(scaled_samples_train).float()
