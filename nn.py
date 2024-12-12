@@ -4,7 +4,7 @@ import torch.optim as optim
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report,confusion_matrix, confusion_matri_display
 
 train_data = pd.read_csv("new_data/new_train_encoded.csv")
 test_data = pd.read_csv("new_data/new_test_encoded.csv")
@@ -70,6 +70,11 @@ model.eval()
 with torch.no_grad():
     outputs = model(X_test_tensor)
     _, predicted = torch.max(outputs, 1)
+
+    cm = confusion_matrix(y_val, pred, labels=regr.classes_)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=regr.classes_)
+    disp.plot()
+    plt.savefig("con_matrix_SMOTE.png")
 
 submission = pd.DataFrame({
     'id': test_data['id'],
